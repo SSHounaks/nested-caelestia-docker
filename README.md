@@ -9,9 +9,9 @@ Everything needed to build and run it, and nothing that touches the host.
 > **Status: the `Dockerfile` builds clean from scratch on `ubuntu:26.04`.**
 > It was reconstructed from the verified contents of a working container (dpkg
 > database, CMake caches, install prefixes, apt history) rather than being the
-> artifact that was built interactively, and the first end-to-end run of the
-> reconstruction found six real breakages. All six are fixed and pinned; see
-> [Known issues](#known-issues) for what they were.
+> artifact that was built interactively, and the first end-to-end runs of the
+> reconstruction found seven real breakages, six of them fatal. All seven are
+> fixed and pinned; see [Known issues](#known-issues) for what they were.
 
 > **The container will not appear in Docker Desktop.** Docker Desktop runs its
 > own Linux VM with its own daemon; this project runs on the host's native
@@ -167,12 +167,46 @@ you maintain this.
    default branch is now 1.0.0, which renamed the library to `libcava.so.1` and
    added an 8th `cava_init` parameter that the shell's plugin does not pass.
 
-6. **The build-time sanity gate aborted.** `Hyprland --verify-config` throws an
+6. **The shell could not find its own QML modules.** `cmake --install` puts the
+   shell's C++ QML modules in `/usr/local/lib/qt6/qml`, but Ubuntu's Qt searches
+   exactly one import path, reported by `qtpaths6 --query QT_INSTALL_QML` as
+   `/usr/lib/x86_64-linux-gnu/qt6/qml`. The shell therefore refused to start:
+   `ERROR: module "Caelestia.Config" is not installed` /
+   `ERROR:   caused by @shell.qml[28:5]: Type ServiceLoader unavailable`.
+   Two symlinks fix it. This is also why no `QML_IMPORT_PATH` is needed
+   anywhere, and why setting one to a path that does not exist is worse than
+   useless.
+
+7. **The build-time sanity gate aborted.** `Hyprland --verify-config` throws an
    uncaught `std::runtime_error` when `XDG_RUNTIME_DIR` is unset, and refuses to
    run as superuser without `--i-am-really-stupid`. Separately, `fc-match` run as
    root does not scan `/home/ubuntu/.local/share/fonts`, so every family appeared
    to fall back to DejaVu even when installed correctly. The gate now runs as
    uid 1000 via `runuser` and checks all three font families explicitly.
+
+Separately, `wayland-info` — which `build-image.sh`'s socket gate uses — is in
+**`wayland-utils`**, not `libwayland-bin`. In wayland 1.24 `libwayland-bin`
+ships only `wayland-scanner`, so a gate that installs the latter finds nothing
+and fails while reporting nothing useful. Both the image and the gate now use
+`wayland-utils`.
+
+### Verified
+
+`docker build --no-cache` completes, and a live session was brought up from the
+result and checked:
+
+```
+GPU gate    OpenGL core profile renderer: AMD Radeon 610M (radeonsi, raphael_mendocino, ACO, DRM 3.64)
+hyprctl     Monitor WAYLAND-1  1280x720@60.00000  scale: 1.00  reserved: 60 10 10 10
+processes   2x hyprland, 2x supervisor, 1x qs -c caelestia
+shell log   Configuration Loaded, no `caelestia.settings` warnings
+layers      caelestia-background, caelestia-drawers, 4x caelestia-border-exclusion
+dispatch    hyprctl dispatch global caelestia:showall -> ok
+```
+
+`reserved: 60 10 10 10` is the load-bearing line: the compositor is reserving
+space for the bar, so it is participating in layout rather than displaying a
+picture. A multiple of 60 means shell instances have leaked.
 
 ### Still open
 

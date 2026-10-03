@@ -44,7 +44,7 @@ docker exec caelestia sh -c 'apt-get install -y -qq --no-install-recommends mesa
 
 echo "==> socket gate"
 docker exec -u ubuntu -e HOME=/home/ubuntu -e XDG_RUNTIME_DIR=/run/user/1000 \
-  -e WAYLAND_DISPLAY=wayland-0 caelestia sh -c 'command -v wayland-info >/dev/null || apt-get install -y -qq --no-install-recommends libwayland-bin >/dev/null 2>&1; wayland-info | head -3'
+  -e WAYLAND_DISPLAY=wayland-0 caelestia sh -c 'command -v wayland-info >/dev/null || apt-get install -y -qq --no-install-recommends wayland-utils >/dev/null 2>&1; wayland-info | head -3'
 
 echo
 echo "Done. Now run: ./start.sh"

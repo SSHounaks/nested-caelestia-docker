@@ -47,12 +47,16 @@ RUN apt-get update -qq \
 # ---------------------------------------------------------------------------
 # 2. Compositor, GPU stack, tools.
 #
+# wayland-utils is here for wayland-info, which is what build-image.sh's socket
+# gate uses. libwayland-bin ships only wayland-scanner in wayland 1.24, so it is
+# NOT the provider - a gate that installs libwayland-bin silently finds nothing.
+#
 # --group-add is NOT used here: GIDs are passed at `docker run` time because
 # `--group-add video` fails when the name is absent from the image's /etc/group
 # (the host's render group is gid 990 and the image has no such entry).
 # ---------------------------------------------------------------------------
 RUN apt-get install -y -qq --no-install-recommends \
-      hyprland hyprland-qtutils foot grim libwayland-bin \
+      hyprland hyprland-qtutils foot grim libwayland-bin wayland-utils \
       libgl1-mesa-dri libegl1 libgbm1 mesa-utils libseat1 libinput10 \
       libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libpixman-1-0 \
       locales adwaita-icon-theme hicolor-icon-theme fontconfig \
@@ -152,6 +156,19 @@ RUN cd /home/ubuntu/.config/quickshell/caelestia \
  && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
  && cmake --build build \
  && cmake --install build
+#
+# Ubuntu's Qt searches exactly one QML import path:
+#     /usr/lib/x86_64-linux-gnu/qt6/qml      (qtpaths6 --query QT_INSTALL_QML)
+# cmake installs the shell's C++ QML modules to /usr/local/lib/qt6/qml, which
+# is NOT on that list, so without these two symlinks the shell fails to load:
+#     ERROR: module "Caelestia.Config" is not installed
+#     ERROR:   caused by @shell.qml[28:5]: Type ServiceLoader unavailable
+# This is also why no QML_IMPORT_PATH is set anywhere: the symlinks make it
+# unnecessary, and setting it to a path that does not exist is worse than useless.
+RUN ln -sfn /usr/local/lib/qt6/qml/Caelestia /usr/lib/x86_64-linux-gnu/qt6/qml/Caelestia \
+ && ln -sfn /usr/local/lib/qt6/qml/M3Shapes /usr/lib/x86_64-linux-gnu/qt6/qml/M3Shapes \
+ && ls -d /usr/lib/x86_64-linux-gnu/qt6/qml/Caelestia /usr/lib/x86_64-linux-gnu/qt6/qml/M3Shapes \
+ && ldconfig
 
 # ---------------------------------------------------------------------------
 # 8. Fonts. Material Symbols Rounded is the one that matters: Caelestia draws
@@ -196,6 +213,7 @@ RUN set -eu; \
       m=$(runuser -u ubuntu -- fc-match "$f"); \
       case "$m" in *NotoSans*|*DejaVu*) echo "FONT GATE FAILED: $f -> $m" >&2; exit 1;; esac; \
     done; \
-    command -v qs; qs --version
+    command -v qs; qs --version; \
+    test -e /usr/lib/x86_64-linux-gnu/qt6/qml/Caelestia/libcaelestia-coreplugin.so
 
 CMD ["sleep", "infinity"]
