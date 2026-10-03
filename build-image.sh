@@ -5,6 +5,13 @@
 # The container's device flags are the load-bearing part and cannot be baked
 # into an image:
 #
+#   --security-opt apparmor=unconfined
+#                         the docker-default AppArmor profile blocks the
+#                         container from talking to the host's D-Bus, so the
+#                         shell silently loses MPRIS, the tray, notifications,
+#                         bluetooth and powerprofiles. Symptom: everything works
+#                         but "Could not connect to DBus" everywhere and busctl
+#                         inside says "Permission denied".
 #   --cap-add SYS_ADMIN   aquamarine cannot open the render node without it,
 #                         and falls back to llvmpipe (Phase 0, gate 3)
 #   --group-add 44        video, for /dev/dri/card1
@@ -32,6 +39,7 @@ docker rm -f caelestia >/dev/null 2>&1 || true
 
 echo "==> starting container"
 docker run -d --name caelestia --init \
+  --security-opt apparmor=unconfined \
   --cap-add SYS_ADMIN \
   --device /dev/dri --group-add 44 --group-add 990 \
   -v /run/user/1000:/run/user/1000 \

@@ -10,7 +10,7 @@ Everything needed to build and run it, and nothing that touches the host.
 > It was reconstructed from the verified contents of a working container (dpkg
 > database, CMake caches, install prefixes, apt history) rather than being the
 > artifact that was built interactively, and the first end-to-end runs of the
-> reconstruction found seven real breakages, six of them fatal. All seven are
+> reconstruction found nine real breakages, seven of them fatal. All nine are
 > fixed and pinned; see [Known issues](#known-issues) for what they were.
 
 > **The container will not appear in Docker Desktop.** Docker Desktop runs its
@@ -190,6 +190,23 @@ ships only `wayland-scanner`, so a gate that installs the latter finds nothing
 and fails while reporting nothing useful. Both the image and the gate now use
 `wayland-utils`.
 
+8. **MPRIS, the tray, and notifications were all silently dead.** The container
+   ran under AppArmor's `docker-default` profile, which blocks D-Bus. Nothing
+   errored usefully: the shell logged `Could not connect to DBus` for MPRIS,
+   StatusNotifier, notifications, bluetooth, upower and powerprofiles, and
+   `busctl --user list` inside the container said `Permission denied` while the
+   host's player was visible the whole time. Music showed as `No media`.
+   `--security-opt apparmor=unconfined` on `docker run` fixes all of it. This
+   one is worth flagging: it is a *runtime* flag, so it cannot be baked into the
+   image and a rebuild without it silently loses half the shell's integration.
+
+9. **A host screen lock wedged the session.** The container shares the host's
+   session bus, so the shell mirrors the host's lock state inward - but
+   `hyprlock` was not installed, so the lock client died and Hyprland sat on its
+   fallback screen (*"it looks like you locked your screen but the lockscreen app
+   died"*), with every panel refusing to open. `cleanup.sh` + `start.sh` was the
+   only way out. `hyprlock` and `hypridle` are now installed.
+
 ### Verified
 
 `docker build --no-cache` completes, and a live session was brought up from the
@@ -202,6 +219,7 @@ processes   2x hyprland, 2x supervisor, 1x qs -c caelestia
 shell log   Configuration Loaded, no `caelestia.settings` warnings
 layers      caelestia-background, caelestia-drawers, 4x caelestia-border-exclusion
 dispatch    hyprctl dispatch global caelestia:showall -> ok
+dbus        AppArmorProfile=unconfined, 245 bus names, MPRIS player visible
 ```
 
 `reserved: 60 10 10 10` is the load-bearing line: the compositor is reserving

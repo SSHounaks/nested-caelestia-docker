@@ -57,6 +57,7 @@ RUN apt-get update -qq \
 # ---------------------------------------------------------------------------
 RUN apt-get install -y -qq --no-install-recommends \
       hyprland hyprland-qtutils foot grim libwayland-bin wayland-utils \
+      hyprlock hypridle \
       libgl1-mesa-dri libegl1 libgbm1 mesa-utils libseat1 libinput10 \
       libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libpixman-1-0 \
       locales adwaita-icon-theme hicolor-icon-theme fontconfig \
