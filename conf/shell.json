@@ -1,0 +1,20 @@
+{
+  "general": {
+    "apps": {
+      "terminal": ["foot"],
+      "audio": ["pavucontrol"],
+      "explorer": ["nautilus"]
+    }
+  },
+  "services": {
+    "gpuType": "Auto"
+  },
+  "paths": {
+    "wallpaperDir": "~/Pictures/Wallpapers"
+  },
+  "appearance": {
+    "transparency": {
+      "enabled": false
+    }
+  }
+}
