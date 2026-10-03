@@ -7,7 +7,7 @@
 #
 #     docker commit caelestia caelestia-full
 #
-# Each step below carries a comment explaining why it exists.
+# See ../docs/nested-caelestia-log.md sections 4b-4f for why each step exists.
 FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -23,12 +23,26 @@ ENV LC_ALL=en_US.UTF-8
 # single largest task in the project. The PPA key is inlined because
 # add-apt-repository is not available until software-properties-common is.
 # ---------------------------------------------------------------------------
-RUN printf 'deb [signed-by=/usr/share/keyrings/danklinux.gpg] https://ppa.launchpadcontent.net/avengemedia/danklinux/ubuntu/ resolute main\n' \
+#
+# Three things here are load-bearing and each one was a build failure first:
+#   * the file must be deb822, not a legacy one-line `deb` stanza, or apt
+#     rejects it with "Malformed stanza 1" and exits 100
+#   * ca-certificates must be installed BEFORE the PPA is added. ubuntu:26.04
+#     ships without it and its own apt sources are plain http, so it installs
+#     fine; the PPA is https, so without it every fetch fails TLS verification
+#   * the key stays armored as .asc. apt accepts an armored key when the
+#     filename ends in .asc, so gnupg is not needed in the image at all
+#   Key fingerprint 45FECBE587307AAA3F0A4BE9FC44813D2A7788B7, "Launchpad PPA
+#   for Avenge Media", fetched with:
+#     gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys FC44813D2A7788B7
+# ---------------------------------------------------------------------------
+RUN printf 'Types: deb\nURIs: https://ppa.launchpadcontent.net/avengemedia/danklinux/ubuntu/\nSuites: resolute\nComponents: main\nSigned-By: /usr/share/keyrings/danklinux.asc\n' \
       > /etc/apt/sources.list.d/danklinux.sources
 COPY danklinux.asc /usr/share/keyrings/danklinux.asc
-RUN gpg --dearmor < /usr/share/keyrings/danklinux.asc > /usr/share/keyrings/danklinux.gpg \
- && rm /usr/share/keyrings/danklinux.asc \
- && apt-get update -qq
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends ca-certificates \
+ && apt-get update -qq \
+ && apt-cache policy quickshell-git
 
 # ---------------------------------------------------------------------------
 # 2. Compositor, GPU stack, tools.
@@ -86,23 +100,55 @@ RUN cmake -S /tmp/m3shapes -B /tmp/m3shapes/build -G Ninja \
 #    already on pkg-config's default search path, so PKG_CONFIG_PATH is not
 #    needed (the reference guide's advice is for other prefixes).
 # ---------------------------------------------------------------------------
-RUN git clone --depth 1 https://github.com/LukashonakV/cava /tmp/libcava \
- && meson setup /tmp/libcava/build /tmp/libcava --buildtype=release -Ddefault_library=shared \
+#
+# Two things here are pinned deliberately, and both were build failures first:
+#
+#   * --branch 0.10.6. The shell's plugin calls the 7-argument cava_init
+#     (cavaprovider.cpp). cavacore's default branch (now 1.0.0) renamed the
+#     library to libcava.so.1 and added an 8th scaling_mode parameter, so the
+#     plugin fails to compile against it. Tag 0.10.7 also renames the
+#     pkg-config file back to libcava.pc.
+#   * --libdir=lib. meson defaults this to lib64 on this platform, and
+#     /usr/local/lib64 is NOT on pkg-config's default search path, so the
+#     shell's configure step dies with "Package 'cava' not found" even though
+#     the library installed perfectly.
+#
+# The .pc file's Cflags point at include/cava rather than include, so
+# #include <cava/cavacore.h> resolves through gcc's own default
+# /usr/local/include instead. That is fine and is why no extra include path is
+# set here.
+# ---------------------------------------------------------------------------
+RUN git clone --depth 1 --branch 0.10.6 https://github.com/LukashonakV/cava /tmp/libcava \
+ && meson setup /tmp/libcava/build /tmp/libcava --buildtype=release --libdir=lib -Ddefault_library=shared \
  && meson compile -C /tmp/libcava/build \
  && meson install -C /tmp/libcava/build \
- && ldconfig
+ && ldconfig \
+ && pkg-config --exists cava
 
 # ---------------------------------------------------------------------------
 # 7. The Caelestia shell.
 #
-# Full clone, not shallow: the build reads its version from `git describe`.
-# The qt6.10-compat patch is mandatory on Ubuntu's Qt 6.10.2 - without it the
-# shell fails to load with three separate errors. See decision D12.
+# Full clone, not shallow: the commit is pinned below, and the build reads its
+# version from `git describe`.
+#
+# The qt6.10-compat patch is MANDATORY on Ubuntu's Qt 6.10.2 - without it the
+# shell fails to load with three separate errors (DoubleSpinBox is not a type,
+# `id: char` is a reserved word, RectangularShadow has no topRightRadius). See
+# decision D12.
+#
+# The commit is pinned to 454f46d, the tree the patch was written against. The
+# patch's third hunk targets modules/lock/center/InputField.qml and no longer
+# applies there, so it is excluded and the same rename is done directly: Qt 6.11
+# relaxed `char` as an identifier, and `char` shadows the global char() function.
+# Unpinned, the build breaks the moment upstream edits that file.
 # ---------------------------------------------------------------------------
 RUN git clone https://github.com/caelestia-dots/shell.git /home/ubuntu/.config/quickshell/caelestia
 COPY qt6.10-compat.patch /tmp/qt6.10-compat.patch
 RUN cd /home/ubuntu/.config/quickshell/caelestia \
- && git apply /tmp/qt6.10-compat.patch \
+ && git checkout -q 454f46da16ae75cc57f34adf48dea74db0fa5175 \
+ && git apply --exclude="modules/lock/center/InputField.qml" /tmp/qt6.10-compat.patch \
+ && sed -i "s/\\bchar\\b/charItem/g" modules/lock/center/InputField.qml \
+ && ! grep -qE '\\bchar\\b' modules/lock/center/InputField.qml \
  && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
  && cmake --build build \
  && cmake --install build
@@ -133,9 +179,23 @@ COPY --chown=ubuntu:ubuntu cleanup.sh                            /home/ubuntu/cl
 RUN chmod +x /home/ubuntu/bin/caelestia-shell-supervisor.sh /home/ubuntu/cleanup.sh \
  && mkdir -p /home/ubuntu/Pictures/Wallpapers
 
+# ---------------------------------------------------------------------------
 # Sanity gate: fail the build rather than discover this at runtime.
-RUN Hyprland --verify-config 2>&1 | grep -q "config ok" \
- && fc-match "Material Symbols Rounded" | grep -qv NotoSans \
- && command -v qs && qs --version
+#
+# All three of these had to be run as uid 1000 rather than as root:
+#   * Hyprland aborts with an uncaught std::runtime_error if XDG_RUNTIME_DIR is
+#     unset, and refuses to run as superuser without --i-am-really-stupid
+#   * fontconfig only scans /home/ubuntu/.local/share/fonts when $HOME points
+#     there, so fc-match as root silently falls back to DejaVu and every family
+#     "fails" even though the font is installed correctly
+# ---------------------------------------------------------------------------
+RUN set -eu; \
+    GATE="HOME=/home/ubuntu XDG_RUNTIME_DIR=/tmp HYPRLAND_NO_CRASHREPORTER=1"; \
+    runuser -u ubuntu -- env $GATE Hyprland --verify-config 2>&1 | grep -q "config ok"; \
+    for f in "Material Symbols Rounded" "Rubik" "CaskaydiaCove NF"; do \
+      m=$(runuser -u ubuntu -- fc-match "$f"); \
+      case "$m" in *NotoSans*|*DejaVu*) echo "FONT GATE FAILED: $f -> $m" >&2; exit 1;; esac; \
+    done; \
+    command -v qs; qs --version
 
 CMD ["sleep", "infinity"]

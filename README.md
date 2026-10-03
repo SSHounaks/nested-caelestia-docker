@@ -6,11 +6,12 @@ GNOME/Wayland session.
 
 Everything needed to build and run it, and nothing that touches the host.
 
-> **Status: the container works, this `Dockerfile` has not been run end to end.**
+> **Status: the `Dockerfile` builds clean from scratch on `ubuntu:26.04`.**
 > It was reconstructed from the verified contents of a working container (dpkg
 > database, CMake caches, install prefixes, apt history) rather than being the
-> artifact that was built interactively. Expect to fix it on a first run; see
-> [Known issues](#known-issues).
+> artifact that was built interactively, and the first end-to-end run of the
+> reconstruction found six real breakages. All six are fixed and pinned; see
+> [Known issues](#known-issues) for what they were.
 
 > **The container will not appear in Docker Desktop.** Docker Desktop runs its
 > own Linux VM with its own daemon; this project runs on the host's native
@@ -130,31 +131,60 @@ docker exec caelestia bash -c "tail -f /tmp/caelestia-shell-$SIG.log"
 
 ## Known issues
 
-Verified against a clean `ubuntu:26.04`, not guessed:
+The reconstruction did not build on the first try. Six things were broken; all
+are fixed, and the fixes are load-bearing enough to be worth knowing about if
+you maintain this.
 
-1. **Step 1 fails: the PPA source is in the wrong format.** The `Dockerfile`
-   writes a legacy one-line `deb` stanza into a file named `.sources`, but
-   `.sources` is deb822. apt rejects it and `apt-get update` exits 100:
-   ```
-   E: Malformed stanza 1 in source list /etc/apt/sources.list.d/danklinux.sources (type)
-   ```
-   It needs `Types: / URIs: / Suites: resolute / Components: main / Signed-By:`.
+1. **The PPA source was in the wrong file format.** A legacy one-line `deb`
+   stanza was written into a `.sources` file, which is deb822. apt rejected it
+   and `apt-get update` exited 100:
+   `E: Malformed stanza 1 in source list /etc/apt/sources.list.d/danklinux.sources`
 
-2. **Step 8 fails: no `ca-certificates`.** `ubuntu:26.04` does not ship it and
-   `--no-install-recommends` will not pull it in, so every `wget` of the fonts
-   dies with `rc=5` (SSL verification). Adding `ca-certificates` to the package
-   list is the entire fix.
+2. **`ca-certificates` was missing.** `ubuntu:26.04` does not ship it and
+   `--no-install-recommends` will not pull it in. The PPA is https, so every
+   fetch failed TLS verification, and so did `git clone` and every `wget` of the
+   fonts. It now installs before the PPA is added.
 
-3. `conf/shell.json` points `audio` at `pavucontrol` and `explorer` at
-   `nautilus`. Neither is installed by the `Dockerfile`, so those two launcher
-   entries launch nothing.
+3. **`danklinux.asc` was corrupt.** The armored block had a stray ` .` line
+   after the header and a failed CRC24, so `gpg` could not parse it at all
+   (`no valid OpenPGP data found`) and apt rejected the signature with
+   `NO_PUBKEY FC44813D2A7788B7`. Re-fetched from the keyserver. It is now
+   `45FECBE587307AAA3F0A4BE9FC44813D2A7788B7`, "Launchpad PPA for Avenge Media".
+   The key stays armored as `.asc`, which apt accepts, so `gnupg` is not needed
+   in the image at all.
 
-4. Nothing is version-pinned. Three `git clone`s, two of them `--depth 1`. The
-   `qt6.10-compat.patch` `git apply` and the `cava_init` signature match will
-   both break the moment upstream moves. Pin the commits if you care about
-   reproducibility.
+4. **The Qt patch no longer applied.** Its third hunk targets
+   `modules/lock/center/InputField.qml`, which has since changed. The shell is
+   now pinned to `454f46d` - the tree the patch was written against - and that
+   one hunk is excluded in favour of doing the rename directly:
+   `sed -i "s/\bchar\b/charItem/g"`. `char` shadows the global `char()`.
 
-5. No `--init` on the container you already have running. PID 1 is
-   `sleep infinity` and never reaps, so every finished `docker exec` leaves a
-   permanent zombie and `pgrep` looks broken. `build-image.sh` already passes
-   `--init`; the fix only applies to containers created before that.
+5. **libcava installed where nothing could find it.** meson defaults to `lib64`
+   on this platform, and `/usr/local/lib64` is not on pkg-config's default
+   search path, so the shell's configure died with `Package 'cava' not found`
+   even though the library had installed perfectly. Fixed with
+   `meson setup --libdir=lib`. The clone is also pinned to tag **0.10.6**: the
+   default branch is now 1.0.0, which renamed the library to `libcava.so.1` and
+   added an 8th `cava_init` parameter that the shell's plugin does not pass.
+
+6. **The build-time sanity gate aborted.** `Hyprland --verify-config` throws an
+   uncaught `std::runtime_error` when `XDG_RUNTIME_DIR` is unset, and refuses to
+   run as superuser without `--i-am-really-stupid`. Separately, `fc-match` run as
+   root does not scan `/home/ubuntu/.local/share/fonts`, so every family appeared
+   to fall back to DejaVu even when installed correctly. The gate now runs as
+   uid 1000 via `runuser` and checks all three font families explicitly.
+
+### Still open
+
+- `conf/shell.json` points `audio` at `pavucontrol` and `explorer` at
+  `nautilus`. Neither is installed, so those two launcher entries launch
+  nothing. Add them or change the paths.
+- `conf/hyprland.conf` sets `QML_IMPORT_PATH=/usr/lib/qt6/qml`, a directory that
+  does not exist on Ubuntu. The shell runs correctly without it; the line is
+  harmless but should be deleted.
+- The image is 4.5 GB, mostly Qt 6 development headers and the shell's own
+  build tree. Neither is needed at runtime; a multi-stage build would cut this
+  substantially.
+- The build was verified to *complete* and to pass its gates. It has not been
+  verified to boot a live session on this machine, because doing so means
+  replacing a running container.
