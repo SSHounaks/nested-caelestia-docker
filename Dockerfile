@@ -61,6 +61,7 @@ RUN apt-get install -y -qq --no-install-recommends \
       libgl1-mesa-dri libegl1 libgbm1 mesa-utils libseat1 libinput10 \
       libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libpixman-1-0 \
       locales adwaita-icon-theme hicolor-icon-theme fontconfig \
+      fonts-noto-cjk fonts-noto-color-emoji \
       && locale-gen en_US.UTF-8
 
 # ---------------------------------------------------------------------------
@@ -172,7 +173,16 @@ RUN ln -sfn /usr/local/lib/qt6/qml/Caelestia /usr/lib/x86_64-linux-gnu/qt6/qml/C
  && ldconfig
 
 # ---------------------------------------------------------------------------
-# 8. Fonts. Material Symbols Rounded is the one that matters: Caelestia draws
+# 8. Fonts.
+#
+# CJK: fonts-noto-cjk (89 MB) covers Simplified Chinese, Traditional Chinese,
+# Japanese and Korean in one .ttc, and fontsconfig's :lang= tags resolve to it
+# automatically once installed. Without it every CJK glyph is tofu - which is
+# exactly what a media player shows for a Japanese title, a CJK filename in the
+# window title, or any app name in the launcher. Verified with fc-match, and
+# gated at the end of this build.
+#
+# Material Symbols Rounded is the other one that matters: Caelestia draws
 #    icons by writing the ligature name and letting the font turn it into a
 #    glyph. Without it fontconfig falls back to Noto Sans and the bar renders
 #    the literal words "terminal", "web", "calendar" as overflowing text.
@@ -186,8 +196,7 @@ RUN mkdir -p /home/ubuntu/.local/share/fonts && cd /home/ubuntu/.local/share/fon
  && wget -q -O CascadiaCodeNF.zip "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.3.0/CascadiaCode.zip" \
  && unzip -qo CascadiaCodeNF.zip -d CascadiaCodeNF && cp CascadiaCodeNF/*.ttf . \
  && rm -rf CascadiaCodeNF CascadiaCodeNF.zip \
- && fc-cache -f \
- && for f in "Material Symbols Rounded" "Rubik" "CaskaydiaCove NF"; do fc-match "$f"; done
+ && fc-cache -f
 
 COPY --chown=ubuntu:ubuntu conf/hyprland.conf                    /home/ubuntu/.config/hypr/hyprland.conf
 COPY --chown=ubuntu:ubuntu conf/shell.json                       /home/ubuntu/.config/caelestia/shell.json
@@ -206,13 +215,18 @@ RUN chmod +x /home/ubuntu/bin/caelestia-shell-supervisor.sh /home/ubuntu/cleanup
 #   * fontconfig only scans /home/ubuntu/.local/share/fonts when $HOME points
 #     there, so fc-match as root silently falls back to DejaVu and every family
 #     "fails" even though the font is installed correctly
+#
+# The deny-list is NotoSans-Regular and DejaVuSans specifically, not "NotoSans*":
+# the CJK family is legitimately called NotoSansCJK-Regular.ttc, so a looser
+# pattern rejects the font it is supposed to be checking for.
 # ---------------------------------------------------------------------------
 RUN set -eu; \
     GATE="HOME=/home/ubuntu XDG_RUNTIME_DIR=/tmp HYPRLAND_NO_CRASHREPORTER=1"; \
     runuser -u ubuntu -- env $GATE Hyprland --verify-config 2>&1 | grep -q "config ok"; \
-    for f in "Material Symbols Rounded" "Rubik" "CaskaydiaCove NF"; do \
+    for f in "Material Symbols Rounded" "Rubik" "CaskaydiaCove NF" \
+             "Noto Sans CJK JP" "Noto Sans CJK SC" "Noto Sans CJK TC" "Noto Sans CJK KR"; do \
       m=$(runuser -u ubuntu -- fc-match "$f"); \
-      case "$m" in *NotoSans*|*DejaVu*) echo "FONT GATE FAILED: $f -> $m" >&2; exit 1;; esac; \
+      case "$m" in *NotoSans-Regular*|*DejaVuSans*) echo "FONT GATE FAILED: $f -> $m" >&2; exit 1;; esac; \
     done; \
     command -v qs; qs --version; \
     test -e /usr/lib/x86_64-linux-gnu/qt6/qml/Caelestia/libcaelestia-coreplugin.so

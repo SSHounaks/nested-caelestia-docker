@@ -226,6 +226,26 @@ dbus        AppArmorProfile=unconfined, 245 bus names, MPRIS player visible
 space for the bar, so it is participating in layout rather than displaying a
 picture. A multiple of 60 means shell instances have leaked.
 
+### Fonts, including CJK
+
+`fonts-noto-cjk` (89 MB) and `fonts-noto-color-emoji` (10 MB) are installed and
+gated. Without CJK fonts every Japanese and Chinese glyph is tofu — which shows
+up as boxes in a media player's OSD, in a CJK filename in a window title, and in
+the shell's own UI when a track title or lyrics contain CJK. Once installed,
+fontconfig's language tags resolve on their own:
+
+```
+:lang=ja     -> NotoSansCJK-Regular.ttc
+:lang=zh-cn  -> NotoSansCJK-Regular.ttc
+:lang=zh-tw  -> NotoSansCJK-Regular.ttc
+:lang=ko     -> NotoSansCJK-Regular.ttc
+```
+
+The build gate checks all four CJK families explicitly. One trap worth knowing
+if you extend that gate: the CJK family is legitimately named
+`NotoSansCJK-Regular.ttc`, so a deny-pattern of `NotoSans*` rejects the very
+font it is checking for. Deny `NotoSans-Regular` and `DejaVuSans` specifically.
+
 ### Still open
 
 - `conf/shell.json` points `audio` at `pavucontrol` and `explorer` at
@@ -234,7 +254,7 @@ picture. A multiple of 60 means shell instances have leaked.
 - `conf/hyprland.conf` sets `QML_IMPORT_PATH=/usr/lib/qt6/qml`, a directory that
   does not exist on Ubuntu. The shell runs correctly without it; the line is
   harmless but should be deleted.
-- The image is 4.5 GB, mostly Qt 6 development headers and the shell's own
+- The image is 4.7 GB, mostly Qt 6 development headers and the shell's own
   build tree. Neither is needed at runtime; a multi-stage build would cut this
   substantially.
 - The build was verified to *complete* and to pass its gates. It has not been
