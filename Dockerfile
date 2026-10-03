@@ -3,16 +3,27 @@
 # Reconstructed from the verified contents of the working `caelestia` container
 # (dpkg database, CMake caches, install prefixes, /var/log/apt/history.log).
 # It reproduces that container's filesystem; it is NOT the artifact that was
-# built interactively. That one is the committed image:
+# built interactively.
 #
-#     docker commit caelestia caelestia-full
+# Multi-stage: `base` carries every runtime package and the fonts, `builder`
+# adds the toolchain and compiles m3shapes, libcava and the shell, and `runtime`
+# takes only the installed artefacts back. That drops the shell's CMake build
+# tree (1.7 GB on its own), the Qt 6 development headers, and the compiler.
+# `runtime` ends with an ldd gate over every installed shared object, so a
+# library that exists in `builder` but not in `runtime` fails the BUILD rather
+# than the shell at runtime.
 #
-# See ../docs/nested-caelestia-log.md sections 4b-4f for why each step exists.
-FROM ubuntu:26.04
+# See docs/nested-caelestia-log.md sections 4b-4f for why each step exists.
+
+FROM ubuntu:26.04 AS base
+
+
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
+
+
 
 # ---------------------------------------------------------------------------
 # 1. Quickshell from the DankLinux PPA, not from source.
@@ -44,6 +55,8 @@ RUN apt-get update -qq \
  && apt-get update -qq \
  && apt-cache policy quickshell-git
 
+
+
 # ---------------------------------------------------------------------------
 # 2. Compositor, GPU stack, tools.
 #
@@ -64,6 +77,8 @@ RUN apt-get install -y -qq --no-install-recommends \
       fonts-noto-cjk fonts-noto-color-emoji \
       && locale-gen en_US.UTF-8
 
+
+
 # ---------------------------------------------------------------------------
 # 3. Quickshell + the QML modules the shell imports.
 # ---------------------------------------------------------------------------
@@ -81,13 +96,79 @@ RUN apt-get install -y -qq --no-install-recommends \
       network-manager ddcutil alsa-utils udev
 
 # ---------------------------------------------------------------------------
-# 4. Build toolchain. Only the shell itself, m3shapes and libcava need this.
+# 3b. Runtime shared libraries for the shell's C++ plugins.
+#
+# These used to arrive as dependencies of the -dev packages in the builder
+# stage. Once the toolchain is gone from the final image they have to be asked
+# for by name, and the ldd gate at the end of the `runtime` stage is what proves
+# the list is complete. Derived from `ldd` over every .so the shell installs:
+# 175 packages in the working image, of which these are the roots apt resolves
+# the rest from.
+#
+# wget and unzip are here rather than only in the builder because the font
+# download lives in base, so both stages inherit it. Installing them with
+# --no-install-recommends and no ca-certificates was the original failure: every
+# fetch died with wget rc=5.
 # ---------------------------------------------------------------------------
 RUN apt-get install -y -qq --no-install-recommends \
+      libqalculate23 libpipewire-0.3-0 libaubio5 \
+      libfftw3-single3 libfftw3-double3 libsensors5 libiniparser4 \
+      libgdk-pixbuf-2.0-0 librsvg2-2 libglycin-2-0 \
+      libavcodec62 libavformat62 libavutil60 libswresample6 \
+      libpulse0 alsa-utils \
+      wget unzip \
+ && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# 8. Fonts.
+#
+# CJK: fonts-noto-cjk (89 MB) covers Simplified Chinese, Traditional Chinese,
+# Japanese and Korean in one .ttc, and fontsconfig's :lang= tags resolve to it
+# automatically once installed. Without it every CJK glyph is tofu - which is
+# exactly what a media player shows for a Japanese title, a CJK filename in the
+# window title, or any app name in the launcher. Verified with fc-match, and
+# gated at the end of this build.
+#
+# Material Symbols Rounded is the other one that matters: Caelestia draws
+#    icons by writing the ligature name and letting the font turn it into a
+#    glyph. Without it fontconfig falls back to Noto Sans and the bar renders
+#    the literal words "terminal", "web", "calendar" as overflowing text.
+#    fc-match is the verification, not the download.
+# ---------------------------------------------------------------------------
+RUN mkdir -p /home/ubuntu/.local/share/fonts && cd /home/ubuntu/.local/share/fonts \
+ && wget -q -O "Rubik.ttf"            "https://github.com/googlefonts/rubik/raw/main/fonts/variable/Rubik%5Bwght%5D.ttf" \
+ && wget -q -O "Rubik-Italic.ttf"     "https://github.com/googlefonts/rubik/raw/main/fonts/variable/Rubik-Italic%5Bwght%5D.ttf" \
+ && wget -q -O "MaterialSymbolsRounded.ttf" \
+      "https://github.com/google/material-design-icons/raw/master/variablefont/MaterialSymbolsRounded%5BFILL%2CGRAD%2Copsz%2Cwght%5D.ttf" \
+ && wget -q -O CascadiaCodeNF.zip "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.3.0/CascadiaCode.zip" \
+ && unzip -qo CascadiaCodeNF.zip -d CascadiaCodeNF && cp CascadiaCodeNF/*.ttf . \
+ && rm -rf CascadiaCodeNF CascadiaCodeNF.zip \
+ && fc-cache -f \
+ && rm -rf /var/lib/apt/lists/*
+
+# ===========================================================================
+
+# builder: toolchain and compilation. Never shipped.
+
+# ===========================================================================
+
+FROM base AS builder
+
+
+
+# ---------------------------------------------------------------------------
+# 4. Build toolchain. Only the shell itself, m3shapes and libcava need this.
+# ---------------------------------------------------------------------------
+# base ends with `rm -rf /var/lib/apt/lists/*` to keep the image small, so the
+# builder inherits no package lists and has to refresh them first.
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends \
       git cmake ninja-build g++ pkg-config wget unzip \
       qt6-base-dev qt6-declarative-dev qt6-shadertools-dev qt6-svg-dev \
       libqalculate-dev libpipewire-0.3-dev libaubio-dev libsensors-dev spirv-tools \
       meson libfftw3-dev libpulse-dev libncurses-dev libiniparser-dev
+
+
 
 # ---------------------------------------------------------------------------
 # 5. m3shapes -> /usr/local. Caelestia's blob backgrounds need it; without it
@@ -98,6 +179,8 @@ RUN cmake -S /tmp/m3shapes -B /tmp/m3shapes/build -G Ninja \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
  && cmake --build /tmp/m3shapes/build \
  && cmake --install /tmp/m3shapes/build
+
+
 
 # ---------------------------------------------------------------------------
 # 6. libcava -> /usr/local. Ubuntu's `cava` package is karlstav's console
@@ -130,6 +213,8 @@ RUN git clone --depth 1 --branch 0.10.6 https://github.com/LukashonakV/cava /tmp
  && meson install -C /tmp/libcava/build \
  && ldconfig \
  && pkg-config --exists cava
+
+
 
 # ---------------------------------------------------------------------------
 # 7. The Caelestia shell.
@@ -167,36 +252,35 @@ RUN cd /home/ubuntu/.config/quickshell/caelestia \
 #     ERROR:   caused by @shell.qml[28:5]: Type ServiceLoader unavailable
 # This is also why no QML_IMPORT_PATH is set anywhere: the symlinks make it
 # unnecessary, and setting it to a path that does not exist is worse than useless.
+
+# Strip the build tree before handing the sources over: it is 1.7 GB of CMake
+# and Ninja artefacts and nothing at runtime reads it.
+RUN rm -rf /home/ubuntu/.config/quickshell/caelestia/build \
+ && cp -a /home/ubuntu/.config/quickshell/caelestia /tmp/shell-src \
+ && chown -R ubuntu:ubuntu /tmp/shell-src \
+ && du -sh /tmp/shell-src
+
+# ===========================================================================
+
+# runtime: base plus the installed artefacts. This is the shipped image.
+
+# ===========================================================================
+
+FROM base AS runtime
+
+
+
+COPY --from=builder /usr/local/ /usr/local/
+
+COPY --from=builder /tmp/shell-src/ /home/ubuntu/.config/quickshell/caelestia/
+
 RUN ln -sfn /usr/local/lib/qt6/qml/Caelestia /usr/lib/x86_64-linux-gnu/qt6/qml/Caelestia \
  && ln -sfn /usr/local/lib/qt6/qml/M3Shapes /usr/lib/x86_64-linux-gnu/qt6/qml/M3Shapes \
  && ls -d /usr/lib/x86_64-linux-gnu/qt6/qml/Caelestia /usr/lib/x86_64-linux-gnu/qt6/qml/M3Shapes \
  && ldconfig
 
-# ---------------------------------------------------------------------------
-# 8. Fonts.
-#
-# CJK: fonts-noto-cjk (89 MB) covers Simplified Chinese, Traditional Chinese,
-# Japanese and Korean in one .ttc, and fontsconfig's :lang= tags resolve to it
-# automatically once installed. Without it every CJK glyph is tofu - which is
-# exactly what a media player shows for a Japanese title, a CJK filename in the
-# window title, or any app name in the launcher. Verified with fc-match, and
-# gated at the end of this build.
-#
-# Material Symbols Rounded is the other one that matters: Caelestia draws
-#    icons by writing the ligature name and letting the font turn it into a
-#    glyph. Without it fontconfig falls back to Noto Sans and the bar renders
-#    the literal words "terminal", "web", "calendar" as overflowing text.
-#    fc-match is the verification, not the download.
-# ---------------------------------------------------------------------------
-RUN mkdir -p /home/ubuntu/.local/share/fonts && cd /home/ubuntu/.local/share/fonts \
- && wget -q -O "Rubik.ttf"            "https://github.com/googlefonts/rubik/raw/main/fonts/variable/Rubik%5Bwght%5D.ttf" \
- && wget -q -O "Rubik-Italic.ttf"     "https://github.com/googlefonts/rubik/raw/main/fonts/variable/Rubik-Italic%5Bwght%5D.ttf" \
- && wget -q -O "MaterialSymbolsRounded.ttf" \
-      "https://github.com/google/material-design-icons/raw/master/variablefont/MaterialSymbolsRounded%5BFILL%2CGRAD%2Copsz%2Cwght%5D.ttf" \
- && wget -q -O CascadiaCodeNF.zip "https://github.com/ryanoasis/nerd-fonts/releases/download/v3.3.0/CascadiaCode.zip" \
- && unzip -qo CascadiaCodeNF.zip -d CascadiaCodeNF && cp CascadiaCodeNF/*.ttf . \
- && rm -rf CascadiaCodeNF CascadiaCodeNF.zip \
- && fc-cache -f
+
+
 
 COPY --chown=ubuntu:ubuntu conf/hyprland.conf                    /home/ubuntu/.config/hypr/hyprland.conf
 COPY --chown=ubuntu:ubuntu conf/shell.json                       /home/ubuntu/.config/caelestia/shell.json
@@ -204,7 +288,8 @@ COPY --chown=ubuntu:ubuntu conf/qml_color.json                   /home/ubuntu/.c
 COPY --chown=ubuntu:ubuntu conf/caelestia-shell-supervisor.sh    /home/ubuntu/bin/caelestia-shell-supervisor.sh
 COPY --chown=ubuntu:ubuntu cleanup.sh                            /home/ubuntu/cleanup.sh
 RUN chmod +x /home/ubuntu/bin/caelestia-shell-supervisor.sh /home/ubuntu/cleanup.sh \
- && mkdir -p /home/ubuntu/Pictures/Wallpapers
+ && mkdir -p /home/ubuntu/Pictures/Wallpapers \
+ && ldconfig
 
 # ---------------------------------------------------------------------------
 # Sanity gate: fail the build rather than discover this at runtime.
@@ -230,5 +315,19 @@ RUN set -eu; \
     done; \
     command -v qs; qs --version; \
     test -e /usr/lib/x86_64-linux-gnu/qt6/qml/Caelestia/libcaelestia-coreplugin.so
+
+# ---------------------------------------------------------------------------
+# Shared-library closure gate. Everything the shell installed must resolve with
+# nothing missing. This is the check that makes the multi-stage split safe: if a
+# package was only pulled in as a -dev dependency in the builder, this fails the
+# build instead of producing an image whose shell dies at startup.
+# ---------------------------------------------------------------------------
+RUN missing=0; \
+    for so in $(find /usr/local -name '*.so*' -type f); do \
+      if ldd "$so" 2>/dev/null | grep -q 'not found'; then \
+        echo "UNRESOLVED in $so:" >&2; ldd "$so" | grep 'not found' >&2; missing=1; \
+      fi; \
+    done; \
+    test "$missing" -eq 0
 
 CMD ["sleep", "infinity"]

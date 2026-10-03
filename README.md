@@ -69,6 +69,7 @@ reserved:  60 10 10 10     # correct
 | `build-image.sh` | run from the host |
 | `start.sh` | run from the host |
 | `cleanup.sh` | `/tmp/cleanup.sh` in the container (also baked to `/home/ubuntu/cleanup.sh`) |
+| `verify.sh` | run from the host after every rebuild. Exits non-zero if anything regressed |
 | `conf/hyprland.conf` | `/home/ubuntu/.config/hypr/hyprland.conf` |
 | `conf/shell.json` | `/home/ubuntu/.config/caelestia/shell.json` |
 | `conf/qml_color.json` | `/home/ubuntu/.config/quickshell/qml_color.json` |
@@ -206,6 +207,74 @@ and fails while reporting nothing useful. Both the image and the gate now use
    fallback screen (*"it looks like you locked your screen but the lockscreen app
    died"*), with every panel refusing to open. `cleanup.sh` + `start.sh` was the
    only way out. `hyprlock` and `hypridle` are now installed.
+
+### Multi-stage build, and the ldd gate
+
+`base` carries every runtime package and the fonts. `builder` adds the toolchain
+and compiles m3shapes, libcava and the shell. `runtime` takes only the installed
+artefacts back:
+
+```
+COPY --from=builder /usr/local/            /usr/local/
+COPY --from=builder /tmp/shell-src/        .../quickshell/caelestia/
+```
+
+The split is not free of traps, all four of which bit during the conversion:
+
+- The shell's `build/` tree is **1.7 GB** of CMake and Ninja artefacts and has to
+  be stripped before the sources cross the stage boundary.
+- Runtime libraries that used to arrive as `-dev` dependencies have to be asked
+  for by name — `libqalculate23`, `libpipewire-0.3-0`, `libaubio5`, the fftw
+  pair, `libsensors5`, the ffmpeg set, and others. `ldd` over the working image
+  says the closure is 175 packages; only the roots are listed.
+- `base` ends with `rm -rf /var/lib/apt/lists/*`, so `builder` inherits no
+  package lists and must `apt-get update` before installing the toolchain.
+- The font download lives in `base`, so `wget` and `unzip` have to be installed
+  there too, not just in the builder.
+
+Because a missed runtime library produces an image that builds fine and a shell
+that dies at startup, the `runtime` stage ends with a **shared-library closure
+gate**: `ldd` over every `.so` under `/usr/local`, failing the build on anything
+`not found`.
+
+```
+image   4.72 GB  ->  1.82 GB
+/usr/include  84 MB -> 320 KB
+removed: gcc, g++, cmake, ninja, meson, git, spirv-opt, the shell build tree
+```
+
+### verify.sh
+
+```bash
+./verify.sh              # against the container named caelestia
+./verify.sh mycontainer  # against another one
+```
+
+24 assertions, non-zero exit on failure, about two seconds. It exists because
+every one of the breakages above presented as a working system quietly doing
+nothing — no crash, no non-zero exit, just a feature that was not there:
+
+```
+container  running, AppArmor unconfined, supplementary GIDs 44 and 990
+gpu        real renderer (rejects llvmpipe), render node openable by uid 1000
+binding    host Wayland + D-Bus sockets, outer compositor answers
+compositor exactly one hyprland / supervisor / qs, WAYLAND-1 not FALLBACK,
+           reserved exactly 60 (catches leaked loops), scale 1.00, layers present
+shell      QML module resolvable, Configuration Loaded, schema clean, no DBus loss
+host       session bus reachable, MPRIS player visible
+fonts      all 7 families resolve, including the 4 CJK ones
+```
+
+It catches real faults, not just configuration drift. Run against a container
+started without `--security-opt apparmor=unconfined` it reports six failures,
+including the dead session bus. It also detects the failure mode where the host
+window is closed and the outer compositor withdraws the `wl_output`: Hyprland
+then answers `hyprctl monitors` with *"unknown request"* and falls back to a
+monitor named `FALLBACK`, which is why the script probes `activeworkspace` too.
+
+Two checks are deliberately `SKIP` rather than `PASS`: bluetooth, upower and
+powerprofiles resolve on the host's *system* bus, which a container has no socket
+for. That is expected. Session-bus services are the ones that must work.
 
 ### Verified
 
